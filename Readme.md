@@ -25,9 +25,9 @@ Enterprise Console.
 
 This repository consists of the following subdirectories:
 
-  > ** bin ** -- contains the wrapper script that controls cresendo instances
-  > ** doc ** -- contains the manual in pdf format
-  > ** src ** -- contains the java source files
+  * **bin** -- contains the wrapper script that controls cresendo instances
+  * **doc** -- contains the manual in pdf format
+  * **src** -- contains the java source files
 
 ### TODO
 
