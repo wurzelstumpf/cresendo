@@ -1,0 +1,705 @@
+#!/bin/sh
+#==============================================================================
+# SYNOPSIS
+#   cresendo start [<instance>]
+#   cresendo stop [<instance>]
+#   cresendo list [<instance>]
+#   cresendo create <instance> <port>
+#   cresendo remove <instance>
+#   cresendo view status [<instance>]
+#   cresendo view log <instance>
+#   cresendo view trace <instance>
+#   cresendo post <instance> <postemsg_args>
+#   cresendo boot enable
+#   cresendo boot disable
+#   cresendo version
+#
+# DESCRIPTION
+#   This script is designed to manage Cresendo instances.
+#
+#   The script assumes that it is located in the "bin" sub-directory
+#   of the Cresendo installation directory.  A single software
+#   installation can support multiple Cresendo instances.
+#
+#   A Cresendo instance is a daemon which has it's own set of
+#   configuration and log files.  When created, each instance is
+#   requires a unique name.  By default, all configuration and log
+#   files belonging to an instance are prefixed by the instance name.
+#
+#   When a Cresendo instance is started the script records it's
+#   process id in the log directory belonging to that instance.  At
+#   some later point in time, when the Cresendo instance needs to be
+#   stopped, it uses this information to kill the instance.
+#
+#   The script relies on being executed by a bourne-shell compatible
+#   unix shell (ie bash, ksh) which records the process id of the last
+#   background command in the special variable "$!".
+#
+#   When a cresendo instance is created a default set of configuration
+#   files are generated from templates.  Although the instance will
+#   start and will receive events it will not do anything with the
+#   events until handler classes in the engine xml file are
+#   uncommented and edited.
+#
+#   Note also that each time the engine xml file is edited the
+#   corresponding Cresendo instance will need to be restarted.
+#
+# OPTIONS
+#   start [<instance>]
+#             Start all available instances.  If an instance name is
+#             provided then start only that instance.
+#
+#   stop [<instance>]
+#             Stop all running instances.  If an instance name is
+#             provided then stop only that instance.
+#
+#   list [<instance>]
+#             List info about all available instances.  If an instance
+#             name is provided then limit info to that instance.
+#
+#   create <instance> <port>
+#             Create the named instance and configure it to listen on
+#             the tcpip port number provided.  Each instance requires
+#             it's own port number to listen on for incoming events.
+#             Also, the port number should not conflict with tcpip
+#             port numbers used by other daemons.
+#
+#   remove <instance>
+#             Remove the named instance. Note that all configuration
+#             and logs files associated with the instance are deleted.
+#
+#   view status [<instance>]
+#             List status info about all available instances.  If an
+#             instance name is provided then limit status info to that
+#             instance.  Status info will only be listed if the
+#             instance is running and status info exists in the
+#             instance log directory.
+#
+#   view log <instance>
+#             View the contents of the engine message log associated
+#             with the instance.
+#
+#   view trace <instance>
+#             View the contents of the engine trace log associated
+#             with the instance.
+#
+#   post <instance> postemsg_args
+#             Post an event to the name instance.  Note that arguments
+#             (apart from the -f argument) will be required in order
+#             to successfully execute postemsg.
+#
+#   boot enable
+#             Install a boot script which will start all Cresendo
+#             instances when the system is started.
+#
+#   boot disable
+#             Uninstall the system boot script.
+#
+#   version
+#             Print the version and build date information
+#
+# AUTHOR
+#   Copyright: Mark Matthews
+#
+# SUPPORTS
+#   Linux and AIX
+#
+# CHANGE HISTORY
+#   2008-06-26  Mark Matthews
+#     In version 1.0 of this script the configuration and log directories
+#     were located in the following locations:
+#
+#          <CRESENDO_DIR>/etc/instance/<INSTANCE>
+#          <CRESENDO_DIR>/log/instance/<INSTANCE>
+#
+#     In version 1.1 (latest) they have been moved to a common instance
+#     run time directory.  In addition, a "var" directory also exists in
+#     this directory.  This is used to store configurable information used
+#     by the new event handlers EventDropByHost and EventMapSeverityByHost.
+#
+#     Consquently, the following directories are created when an
+#     instance is created:
+#
+#          <CRESENDO_DIR>/run/<INSTANCE>/etc
+#          <CRESENDO_DIR>/run/<INSTANCE>/log
+#          <CRESENDO_DIR>/run/<INSTANCE>/var
+#
+#------------------------------------------------------------------------------
+#==============================================================================
+# Makefile
+#
+#   NOTE:  These variables are set up by the Makefile in the 
+#          development source tree.
+#
+VERSION="1.1"
+BUILD="20090310"
+JARFILENAMES="commons-cli-1.1.jar commons-configuration-1.4.jar commons-lang-2.3.jar commons-logging-1.1.jar commons-collections-3.2.jar eif-evd-3.9.jar eif-log-3.9.jar cresendo-1.1.jar"
+
+#------------------------------------------------------------------------------
+#==============================================================================
+# Variables
+#
+#   NOTE:  This script assumes that the cresendo script is installed in
+#          the cresendo bin directory when an image is built.
+#
+PRG="`basename $0`"                     # Name of this script
+TCB="`dirname $0`"                      # Find relative path To Cresendo Bin dir
+CRESENDO_BIN="`(cd $TCB && pwd)`"       # Determine absolute path to bin dir
+CRESENDO_DIR="`dirname $CRESENDO_BIN`"  # Path to cresendo install dir
+CRESENDO_ETC="${CRESENDO_DIR}/etc"      # Path to cresendo etc dir
+CRESENDO_LIB="${CRESENDO_DIR}/lib"      # Path to cresendo lib dir
+CRESENDO_RUN="${CRESENDO_DIR}/run"      # Path to cresendo run dir
+CRESENDO_JRE="${CRESENDO_DIR}/jre"      # Path to cresendo java jre
+PATH="${CRESENDO_JRE}/bin:${PATH}"
+export PATH
+
+BOOT_AIX="/etc/rc.cresendo"
+BOOT_ITAB='cresendo:2:wait:/etc/rc.cresendo start > /dev/console 2>&1'
+BOOT_LINUX="/etc/rc.d/init.d/cresendo"
+BOOT_PERM="755"
+#------------------------------------------------------------------------------
+#==============================================================================
+# Functions
+#
+
+usage()
+{
+  cat <<EOF >&2
+
+  Usage:
+         $PRG start [<instance>]
+         $PRG stop [<instance>]
+         $PRG list [<instance>]
+         $PRG create <instance> <port>
+         $PRG remove <instance>
+         $PRG view status [<instance>]
+         $PRG view log <instance>
+         $PRG view trace  <instance>
+         $PRG post <instance> <postemsg_args>
+         $PRG boot enable
+         $PRG boot disable
+         $PRG version
+
+EOF
+  exit 2
+}
+
+err()
+{
+  echo "Error: $PRG: $*" >&2
+  exit 1
+}
+
+run()
+{
+  echo ..... "$@" && "$@"
+}
+
+msg()
+{
+  echo ..... "$@"
+}
+
+# Takes two arguments; the name of the file and the su user name
+#
+mk_boot_script()
+{
+    if [ -n "${1}" -a -n "${2}" ] ; then
+
+    cat <<EOF  >  "${1}"
+# Cresendo boot script  
+#
+# Generated on `date +"%Y-%m-%d %H:%M:%S"`
+#
+# chkconfig: 2345 42 58
+# description: teC event REceive and SENDo daemon
+#
+UID="${2}"
+CMD="${CRESENDO_BIN}/${PRG}"
+
+case "\${1}" in
+
+    start)
+            su - "\${UID}" -c "\${CMD}" start
+            ;;
+    stop)
+            su - "\${UID}" -c "\${CMD}" stop
+            ;;
+    *)
+            echo "Usage: \$0 {start | stop}"
+            exit 1
+            ;;
+esac
+
+EOF
+    fi
+}
+
+check_root()
+{
+    case "`id`" in
+        uid=0*) break ;;
+        *)err "Must be run as root (ie uid=0)" ;;
+    esac
+}
+
+#------------------------------------------------------------------------------
+#==============================================================================
+# Sanity checking
+#
+[ -d "${CRESENDO_DIR}" ] || err "Directory does not exist: ${CRESENDO_DIR}"
+[ -d "${CRESENDO_ETC}" ] || err "Directory does not exist: ${CRESENDO_ETC}"
+[ -d "${CRESENDO_LIB}" ] || err "Directory does not exist: ${CRESENDO_LIB}"
+[ -d "${CRESENDO_RUN}" ] || err "Directory does not exist: ${CRESENDO_RUN}"
+[ -d "${CRESENDO_JRE}" ] || err "Directory does not exist: ${CRESENDO_JRE}"
+[ -x "${CRESENDO_JRE}/bin/java" ] || err "Unable to execute: ${CRESENDO_JRE}/bin/java"
+
+#------------------------------------------------------------------------------
+#==============================================================================
+# Add required jar files to the classpath 
+#
+CLASSPATH=""
+
+for i in ${JARFILENAMES} ; do
+
+  JARFILE="${CRESENDO_LIB}/${i}"
+
+  [ -r "${JARFILE}" ] || err "Unable to access jar library: ${JARFILE}"
+  CLASSPATH="${CLASSPATH}:${JARFILE}"
+
+done
+
+#------------------------------------------------------------------------------
+#==============================================================================
+# Main
+#
+umask 022
+
+case "${1}" in
+    start)
+        INSTANCE_LIST=""                        # List of instances to start
+
+        if [ -n "${2}" ] ; then                 # Just one instance
+          INSTANCE_LIST="${2}"
+        else                                    # List of all known instances
+          INSTANCE_LIST=`ls "${CRESENDO_RUN}"`
+          [ -z "${INSTANCE_LIST}" ] && err "No instances have been created"
+        fi
+
+        for INSTANCE in ${INSTANCE_LIST} ; do
+
+          RUN_DIR=""
+          RUN_DIR="${CRESENDO_RUN}/${INSTANCE}"
+
+          CFG_DIR=""
+          CFG_DIR="${CRESENDO_RUN}/${INSTANCE}/etc"
+
+          LOG_DIR=""
+          LOG_DIR="${CRESENDO_RUN}/${INSTANCE}/log"
+
+          [ -d "${RUN_DIR}" ] || err "Missing instance run directory: ${RUN_DIR}"
+          [ -d "${CFG_DIR}" ] || err "Missing instance cfg directory: ${CFG_DIR}"
+          [ -d "${LOG_DIR}" ] || err "Missing instance log directory: ${LOG_DIR}"
+
+          PID_FILE="${LOG_DIR}/${INSTANCE}.pid" 
+
+          if [ -f "${PID_FILE}" ] ; then
+
+              INSTANCE_PID="`cat ${PID_FILE}`"
+
+              ps -fp ${INSTANCE_PID} | grep Cresendo | grep "i ${INSTANCE}" > /dev/null
+
+              if [ $? == 0 ] ; then
+                  err "Cresendo instance ${INSTANCE} with process id ${INSTANCE_PID} is already running"
+              else
+                  rm -f "${PID_FILE}" || err "Unable to remove invalid process id file: ${PID_FILE}"
+              fi
+          fi
+
+          > "${PID_FILE}" || err "Unable to create zero length pid file: ${PID_FILE}"
+          rm -f "${PID_FILE}" || err "Unable to remove zero length pid file: ${PID_FILE}"
+
+          cd "${RUN_DIR}" || err "Unable to change directory to: ${RUN_DIR}"
+
+          msg "Starting cresendo instance ${INSTANCE}"
+          java -cp "${CLASSPATH}" Cresendo -c "${CFG_DIR}" -l "${LOG_DIR}" -i "${INSTANCE}" &
+
+          echo ${!} > "${PID_FILE}" || err "Unable to write process id to file: ${PID_FILE}"
+
+        done
+        ;;
+    
+    stop)
+        INSTANCE_LIST=""                        # List of instances to stop
+
+        if [ -n "${2}" ] ; then                 # Just one instance
+          INSTANCE_LIST="${2}"
+        else                                    # List of all known instances
+          INSTANCE_LIST=`ls "${CRESENDO_RUN}"`
+          [ -z "${INSTANCE_LIST}" ] && err "No instances have been created"
+        fi
+
+        for INSTANCE in ${INSTANCE_LIST} ; do
+
+          RUN_DIR=""
+          RUN_DIR="${CRESENDO_RUN}/${INSTANCE}"
+
+          CFG_DIR=""
+          CFG_DIR="${CRESENDO_RUN}/${INSTANCE}/etc"
+
+          LOG_DIR=""
+          LOG_DIR="${CRESENDO_RUN}/${INSTANCE}/log"
+
+          [ -d "${RUN_DIR}" ] || err "Missing instance run directory: ${RUN_DIR}"
+          [ -d "${CFG_DIR}" ] || err "Missing instance cfg directory: ${CFG_DIR}"
+          [ -d "${LOG_DIR}" ] || err "Missing instance log directory: ${LOG_DIR}"
+
+          PID_FILE="${LOG_DIR}/${INSTANCE}.pid" 
+
+          if [ ! -r "${PID_FILE}" ] ; then
+              msg "Cresendo instance ${INSTANCE} is not running"
+              continue
+          fi
+
+
+          INSTANCE_PID="`cat ${PID_FILE}`"
+          ps -fp ${INSTANCE_PID} | grep Cresendo | grep "i ${INSTANCE}" > /dev/null
+
+          if [ $? == 0 ] ; then
+
+            msg "Stopping Cresendo instance ${INSTANCE} with process id ${INSTANCE_PID}"
+            kill -TERM ${INSTANCE_PID}
+            rm -f "${PID_FILE}" || err "Unable to remove file containing pid ${PID_FILE}"
+          else
+              err "Cresendo instance ${INSTANCE} with process id ${INSTANCE_PID} is not running"
+          fi
+
+        done
+        ;;
+
+    list)
+        INSTANCE_LIST=""                        # List of instances to list
+
+        if [ -n "${2}" ] ; then                 # Just one instance
+          INSTANCE_LIST="${2}" 
+        else                                    # List of all known instances
+          INSTANCE_LIST=`ls "${CRESENDO_RUN}"`
+          [ -z "${INSTANCE_LIST}" ] && err "No instances have been created"
+        fi
+
+        for INSTANCE in ${INSTANCE_LIST} ; do
+
+          RUN_DIR=""
+          RUN_DIR="${CRESENDO_RUN}/${INSTANCE}"
+
+          CFG_DIR=""
+          CFG_DIR="${CRESENDO_RUN}/${INSTANCE}/etc"
+
+          LOG_DIR=""
+          LOG_DIR="${CRESENDO_RUN}/${INSTANCE}/log"
+
+          [ -d "${RUN_DIR}" ] || err "Missing instance run directory: ${RUN_DIR}"
+          [ -d "${CFG_DIR}" ] || err "Missing instance cfg directory: ${CFG_DIR}"
+          [ -d "${LOG_DIR}" ] || err "Missing instance log directory: ${LOG_DIR}"
+
+          PID_FILE=""
+          PID_FILE="${LOG_DIR}/${INSTANCE}.pid"
+
+          PORT_FILE=""
+          PORT_FILE="${CFG_DIR}/${INSTANCE}.port"
+
+          I_PORT=""
+          I_PORT=`cat "${PORT_FILE}"`
+
+          if [ -f "${PID_FILE}" ] ; then
+
+              I_PID=""
+              I_PID=`cat "${PID_FILE}"`
+              msg "Instance ${INSTANCE} configured on port ${I_PORT} is running with pid ${I_PID}"
+
+          else
+              msg "Instance ${INSTANCE} configured on port ${I_PORT} is not running"
+          fi
+
+        done
+        ;;
+
+    create)
+       INSTANCE=`echo "${2}" | tr ' ' '_'`   # Cresendo instance name (replace spaces with underscores)
+       [ -z "${INSTANCE}" ] && usage
+
+       PORT="${3}"                         # Port on which the cresendo instance listens
+       [ -z "${PORT}" ] && usage
+
+       RUN_DIR="${CRESENDO_RUN}/${INSTANCE}"
+       CFG_DIR="${CRESENDO_RUN}/${INSTANCE}/etc"
+       DTD_DIR="${CRESENDO_RUN}/${INSTANCE}/etc/dtd"
+       LOG_DIR="${CRESENDO_RUN}/${INSTANCE}/log"
+       VAR_DIR="${CRESENDO_RUN}/${INSTANCE}/var"
+
+       [ -d "${RUN_DIR}" ] && err "Cresendo instance already exists: ${INSTANCE}"
+
+       if [ ! -d "${CFG_DIR}" ] ; then
+           msg "Creating directory ${CFG_DIR}"
+           mkdir -p "${CFG_DIR}"   || err "Unable to create directory: ${CFG_DIR}"
+       fi
+
+       if [ ! -d "${DTD_DIR}" ] ; then
+           msg "Creating directory ${DTD_DIR}"
+           mkdir -p "${DTD_DIR}"   || err "Unable to create directory: ${DTD_DIR}"
+       fi
+
+       if [ ! -d "${LOG_DIR}" ] ; then
+           msg "Creating directory ${LOG_DIR}"
+           mkdir -p "${LOG_DIR}"   || err "Unable to create directory: ${LOG_DIR}"
+       fi
+          
+       if [ ! -d "${VAR_DIR}" ] ; then
+           msg "Creating directory ${VAR_DIR}"
+           mkdir -p "${VAR_DIR}"   || err "Unable to create directory: ${VAR_DIR}"
+       fi
+          
+       msg "Creating ${CFG_DIR}/${INSTANCE}.conf"
+       sed -e "s:__INSTANCE__:${INSTANCE}:"   \
+           -e "s:__INSTANCEPORT__:${PORT}:"   \
+           -e "s:__LOG__:${LOG_DIR}:"    \
+           <"${CRESENDO_ETC}"/template/template.conf >"${CFG_DIR}"/"${INSTANCE}".conf
+
+       msg "Creating ${CFG_DIR}/${INSTANCE}.send"
+       sed -e "s:__INSTANCE__:${INSTANCE}:"   \
+           -e "s:__INSTANCEPORT__:${PORT}:"   \
+           -e "s:__LOG__:${LOG_DIR}:"    \
+           <"${CRESENDO_ETC}"/template/template.send >"${CFG_DIR}"/"${INSTANCE}".send
+
+       msg "Creating ${CFG_DIR}/${INSTANCE}.postemsg"
+       sed -e "s:__INSTANCE__:${INSTANCE}:"   \
+           -e "s:__INSTANCEPORT__:${PORT}:"   \
+           -e "s:__LOG__:${LOG_DIR}:"    \
+           <"${CRESENDO_ETC}"/template/template.postemsg >"${CFG_DIR}"/"${INSTANCE}".postemsg
+
+       msg "Creating ${CFG_DIR}/${INSTANCE}.xml"
+       sed -e "s:__INSTANCE__:${INSTANCE}:"   \
+           -e "s:__INSTANCEPORT__:${PORT}:"   \
+           -e "s:__LOG__:${LOG_DIR}:"    \
+          <"${CRESENDO_ETC}"/template/template.xml  >"${CFG_DIR}"/"${INSTANCE}".xml
+
+       msg "Creating ${CFG_DIR}/${INSTANCE}.port"
+       echo "${PORT}" > "${CFG_DIR}"/"${INSTANCE}".port
+       
+       msg "Installing document type definition engine.dtd"
+       cp "${CRESENDO_ETC}"/dtd/engine.dtd  "${DTD_DIR}"
+
+       msg "Now uncomment and edit the event handlers in: "
+       msg "  ${CFG_DIR}/${INSTANCE}.xml"
+
+       ;;
+
+    remove)
+       INSTANCE=`echo "${2}" | tr ' ' '_'`   # Cresendo instance name (replace spaces with underscores)
+       [ -z "${INSTANCE}" ] && usage
+
+       RUN_DIR="${CRESENDO_RUN}/${INSTANCE}"
+
+       [ -d "${RUN_DIR}" ] || err "Cresendo instance does not exist: ${INSTANCE}"
+
+       PID_FILE="${LOG_DIR}/${INSTANCE}.pid" 
+
+       if [ -f "${PID_FILE}" ] ; then
+
+           INSTANCE_PID=""
+           INSTANCE_PID=`cat "${PID_FILE}"`
+
+           ps -fp ${INSTANCE_PID} | grep Cresendo | grep "i ${INSTANCE}" > /dev/null
+           if [ "$?" == 0 ] ; then
+               err "Cresendo instance ${INSTANCE} is currently running with process id ${INSTANCE_PID}"
+           fi
+       fi
+
+       msg "Removing instance ${INSTANCE}"
+       rm -rf "${RUN_DIR}"
+       ;;
+
+    view)
+        case "${2}" in
+        status)
+           INSTANCE_LIST=""     # List of instances to view status
+
+           if [ -n "${3}" ] ; then                   # Just one instance
+               INSTANCE_LIST="${3}"
+           else                                      # List of all known instances
+               INSTANCE_LIST=`ls "${CRESENDO_RUN}"`
+               [ -z "${INSTANCE_LIST}" ] && err "No instances have been created"
+           fi
+
+           for INSTANCE in ${INSTANCE_LIST} ; do
+
+               RUN_DIR=""
+               RUN_DIR="${CRESENDO_RUN}/${INSTANCE}"
+
+               CFG_DIR=""
+               CFG_DIR="${CRESENDO_RUN}/${INSTANCE}/etc"
+
+               LOG_DIR=""
+               LOG_DIR="${CRESENDO_RUN}/${INSTANCE}/log"
+
+               [ -d "${RUN_DIR}" ] || err "Missing instance run directory: ${RUN_DIR}"
+               [ -d "${CFG_DIR}" ] || err "Missing instance cfg directory: ${CFG_DIR}"
+               [ -d "${LOG_DIR}" ] || err "Missing instance log directory: ${LOG_DIR}"
+
+               PID_FILE="${LOG_DIR}/${INSTANCE}.pid" 
+
+               if [ -f "${PID_FILE}" ] ; then
+
+                   INSTANCE_PID=""
+                   INSTANCE_PID=`cat "${PID_FILE}"`
+
+                   ps -fp ${INSTANCE_PID} | grep Cresendo | grep "i ${INSTANCE}" > /dev/null
+                   if [ "$?" == 0 ] ; then
+
+                       msg "Current status output for instance ${INSTANCE} is"
+                       cat "${LOG_DIR}/${INSTANCE}"-engine.status
+                   else
+                       msg "Instance ${INSTANCE} with process id ${INSTANCE_PID} is not running"
+                   fi
+               else
+                   msg "Instance ${INSTANCE} is not running"
+               fi
+               
+           done
+           ;;
+
+        log)
+          INSTANCE="${3}"                        # Cresendo instance name
+          [ -z "${INSTANCE}" ] && usage
+
+          LOG_DIR=""
+          LOG_DIR="${CRESENDO_RUN}/${INSTANCE}/log"
+
+          [ -d "${LOG_DIR}" ] || err "Cresendo instance ${INSTANCE} has not been created"
+
+          LOG_FILE=""
+          LOG_FILE="${LOG_DIR}/${INSTANCE}-engine.log"
+
+          [ -r "${LOG_FILE}" ] || err "Unable to read engine log file ${LOG_FILE}"
+          run cat "${LOG_FILE}"
+          echo
+          ;;
+
+        trace)
+          INSTANCE="${3}"                        # Cresendo instance name
+          [ -z "${INSTANCE}" ] && usage
+
+          LOG_DIR=""
+          LOG_DIR="${CRESENDO_RUN}/${INSTANCE}/log"
+
+          [ -d "${LOG_DIR}" ] || err "Cresendo instance ${INSTANCE} has not been created"
+
+          LOG_FILE=""
+          LOG_FILE="${LOG_DIR}/${INSTANCE}-engine.trace"
+
+          [ -r "${LOG_FILE}" ] || err "Unable to read engine trace file ${LOG_FILE}"
+          run cat "${LOG_FILE}"
+          echo
+          ;;
+
+        *) usage ;;
+
+        esac
+        ;;
+
+    post)
+        INSTANCE="${2}"                        # Cresendo instance name
+        [ -z "${INSTANCE}" ] && usage
+
+        shift 2                                # Get rid of action and instance name args
+
+        POSTEMSG="${CRESENDO_BIN}"/postemsg
+
+        [ -x "${POSTEMSG}" ] || err "Unable to execute ${POSTEMSG}"
+
+        CFG_DIR=""
+        CFG_DIR="${CRESENDO_RUN}/${INSTANCE}/etc"
+
+        [ -d "${CFG_DIR}" ] || err "Cresendo instance ${INSTANCE} has not been created"
+
+        POSTEMSG_CFG="${CFG_DIR}/${INSTANCE}".postemsg
+        
+        [ -r "${POSTEMSG_CFG}" ] || err "Unable to read file ${POSTEMSG_CFG}"
+
+        run "${POSTEMSG}" -f "${POSTEMSG_CFG}" "${@}"
+
+        ;;
+
+    boot)
+        check_root                     # Check user running script has uid=0
+        PATH="/sbin:/usr/sbin:$PATH"   # Adjust path to find mkitab, rmitab and chkconfig
+        export PATH
+
+        case "${2}" in
+            enable)
+                # Get Cresendo bin directory owner user id
+                # ----------------------------------------
+                CUID="`ls -ld ${CRESENDO_BIN} | tr -s ' ' | cut -f 3 -d ' '`"
+                
+                case "`uname`" in
+                    AIX)
+                        [ -f "${BOOT_AIX}" ] && err "Boot script  already exists: ${BOOT_AIX}"
+                        msg "Creating boot script ${BOOT_AIX}"
+                        mk_boot_script "${BOOT_AIX}" "${CUID}"
+                        run chmod "${BOOT_PERM}" "${BOOT_AIX}"
+                        msg "Adding boot script to inittab"
+                        run mkitab "${BOOT_ITAB}"
+                        ;;
+
+                    Linux)
+                        [ -f "${BOOT_LINUX}" ] && err "Boot script already exists: ${BOOT_LINUX}"
+                        msg "Creating boot script ${BOOT_LINUX}"
+                        mk_boot_script "${BOOT_LINUX}" "${CUID}"
+                        run chmod "${BOOT_PERM}" "${BOOT_LINUX}"
+                        msg "Activating boot script"
+                        run chkconfig --add `basename "${BOOT_LINUX}"`
+                        ;;
+
+                    *)
+                        err "Unsupported platform `uname`"
+                        ;;
+                esac
+                ;;
+
+            disable)
+              case "`uname`" in
+                  AIX)
+                      [ -f "${BOOT_AIX}" ] || err "Boot script does not exist: ${BOOT_AIX}"
+                      msg "Removing boot script from inittab"
+                      run rmitab "`echo ${BOOT_ITAB} | cut -f 1 -d : `"
+                      msg "Removing boot script ${BOOT_AIX}"
+                      run rm -f "${BOOT_AIX}"
+                      ;;
+
+                  Linux)
+                      [ -f "${BOOT_LINUX}" ] || err "Boot script does not exist: ${BOOT_LINUX}"
+                      msg "Deactivating boot script"
+                      run chkconfig --del `basename "${BOOT_LINUX}"`
+                      msg "Removing boot script ${BOOT_LINUX}"
+                      run rm -f "${BOOT_LINUX}"
+                      ;;
+                  *)
+                      err "Unsupported platform `uname`"
+                      ;;
+              esac
+            ;;
+
+            *) usage ;;
+
+        esac
+        ;;
+
+version)
+        echo "Version: ${VERSION}  Build: ${BUILD}"
+        ;;
+
+*) usage ;;
+esac
+#------------------------------------------------------------------------------
+#==============================================================================
+#------------------------------------------------------------------------------

@@ -1,0 +1,33 @@
+Cresendo Change History
+
+Major changes in version 1.1
+
+  IEventProcess interface
+    changed to IEventHandler in all java source files and Makefile
+
+  Makefile
+    IEventProcess java and class entry changed to IEventHandler
+    cresendo target added so version, jar file names and build date
+      recorded in the cresendo script
+  
+  cresendo script
+    version option added to print version and build date
+    classpath constructed from hardcoded jar library names
+
+  EventDeriveAndSetAttr
+    added the rindex (reverse index) boolean option so that
+    the index can be interpreted as a position from the end
+    of the string to the begining
+
+  ShutdownThread
+    Added this class so that a message is written to the log
+    when a cresendo instance is shutdown
+
+  EventDropByHost
+    Added this event handler so that events from specified
+    hosts will be dropped.
+
+  EventMapServerityByHost
+    Added this event handler so that event severity can be
+    remapped based on the short host name.
+  

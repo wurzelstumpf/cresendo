@@ -1,0 +1,26 @@
+# .gitignore
+#
+# Ignore all
+*
+
+# But not
+!.gitignore
+
+# And not c source files 
+!*.java
+
+# And not pdf files 
+!*.pdf
+
+# And not text files
+!*.txt
+
+# And not the wrapper script
+!cresendo
+
+# And not markdown
+!*.md
+
+# And not directories
+!*/
+
